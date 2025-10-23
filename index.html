@@ -4,6 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Save Phone & Location</title>
+
+  <!-- Leaflet CSS (map) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+
   <style>
     :root { --fg:#111; --muted:#555; --brand:#1a73e8; --danger:#c62828; --card:#f7f7f8; }
     * { box-sizing: border-box; }
@@ -19,12 +28,19 @@
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
     button { appearance:none; border:0; border-radius: 10px; padding: 10px 16px; font-size: 16px; cursor:pointer; }
     .primary { background: var(--brand); color:white; }
-    .danger { background: var(--danger); color:white; }
+    .danger { background: #c62828; color:white; }
     .ghost { background: #efefef; }
     #output { min-height: 20px; }
     .ok { color: #0a7f2e; }
     .err { color: #b00020; }
-    pre { background: var(--card); padding: 12px; border-radius: 10px; overflow:auto; }
+
+    /* Map card */
+    #mapCard { display:none; }
+    #mapMeta { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+    #mapTimestamp { font-weight: 600; }
+    #mapCoords { color: var(--muted); font-size: 14px; }
+    #map { width: 100%; height: 360px; border-radius: 12px; overflow: hidden; }
+
     .view { display:none; }
     .view.active { display:block; }
     footer { text-align:center; padding: 16px; color: var(--muted); font-size: 13px; }
@@ -33,8 +49,9 @@
 <body>
   <header>
     <h1>Save My Location</h1>
-    <p class="muted">One-time phone capture → then save & manage your location</p>
+    <p class="muted">One-time phone capture → then save & see your location on a map</p>
   </header>
+
   <main>
     <!-- SETUP VIEW -->
     <section id="setupView" class="view">
@@ -69,14 +86,16 @@
         <div id="output" class="muted"></div>
       </div>
 
-      <div style="height:12px"></div>
-
-      <div class="card stack">
-        <div class="row" style="justify-content:space-between; align-items:center;">
-          <strong>Saved record (local)</strong>
-          <button id="refreshBtn" class="ghost">Refresh</button>
+      <!-- Map + timestamp -->
+      <div id="mapCard" class="card stack" style="margin-top:12px;">
+        <div id="mapMeta">
+          <div id="mapTimestamp">—</div>
+          <div id="mapCoords" class="muted">—</div>
         </div>
-        <pre id="savedPre">(none)</pre>
+        <div id="map"></div>
+        <div class="muted" style="font-size:12px;">
+          Map data © <a href="https://www.openstreetmap.org/" target="_blank" rel="noopener">OpenStreetMap</a> contributors
+        </div>
       </div>
     </section>
   </main>
@@ -85,9 +104,16 @@
     Privacy: phone, IP, and location are stored in your browser and (on save) also sent to this service for admin viewing.
   </footer>
 
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
   <script>
     /* ---------------------- CONFIG: point to your backend ---------------------- */
-    const API_BASE = "https://locationretrievalpoc.onrender.com";
+    const API_BASE = "https://YOUR-BACKEND.example.com"; // <-- change me
     const SUBMIT_URL = API_BASE + "/api/submit";
     const CHECK_IP_API = "https://api.ipify.org?format=json";
 
@@ -106,21 +132,32 @@
     const labelIP = document.getElementById('labelIP');
     const saveBtn = document.getElementById('saveBtn');
     const deleteBtn = document.getElementById('deleteBtn');
-    const refreshBtn = document.getElementById('refreshBtn');
     const resetOnboarding = document.getElementById('resetOnboarding');
     const output = document.getElementById('output');
-    const savedPre = document.getElementById('savedPre');
+
+    // Map elements
+    const mapCard = document.getElementById('mapCard');
+    const mapTimestampEl = document.getElementById('mapTimestamp');
+    const mapCoordsEl = document.getElementById('mapCoords');
+    const savedPre_DEPRECATED = null; // kept for clarity; we don't show JSON anymore
+
+    let map;        // Leaflet map instance
+    let marker;     // Leaflet marker instance
 
     function normalizePhone(raw){ return (raw||'').replace(/[^\d+]/g,''); }
     function getPhone(){ return localStorage.getItem(PHONE_KEY) || null; }
     function setPhone(v){ localStorage.setItem(PHONE_KEY, v); }
     function getIP(){ return localStorage.getItem(IP_KEY) || null; }
     function setIP(v){ localStorage.setItem(IP_KEY, v); }
+
     function readRecord(){ try { return JSON.parse(localStorage.getItem(RECORD_KEY) || 'null'); } catch { return null; } }
-    function writeRecord(obj){ localStorage.setItem(RECORD_KEY, JSON.stringify(obj, null, 2)); renderSaved(); }
-    function clearRecord(){ localStorage.removeItem(RECORD_KEY); renderSaved(); }
-    function renderSaved(){ const rec = readRecord(); savedPre.textContent = rec ? JSON.stringify(rec, null, 2) : '(none)'; }
-    function switchView(name){ for (const el of document.querySelectorAll('.view')) el.classList.remove('active'); document.getElementById(name).classList.add('active'); }
+    function writeRecord(obj){ localStorage.setItem(RECORD_KEY, JSON.stringify(obj, null, 2)); renderMapFromSaved(); }
+    function clearRecord(){ localStorage.removeItem(RECORD_KEY); renderMapFromSaved(); }
+
+    function switchView(name){
+      for (const el of document.querySelectorAll('.view')) el.classList.remove('active');
+      document.getElementById(name).classList.add('active');
+    }
 
     async function detectIP(){
       try {
@@ -143,6 +180,41 @@
       }
     }
 
+    // ----------------------------- MAP RENDERING -----------------------------
+    function initMapIfNeeded(lat, lng){
+      if (!map) {
+        map = L.map('map');
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
+        }).addTo(map);
+      }
+      map.setView([lat, lng], 15);
+      if (!marker) {
+        marker = L.marker([lat, lng]).addTo(map);
+      } else {
+        marker.setLatLng([lat, lng]);
+      }
+    }
+
+    function renderMap(record){
+      if (!record) {
+        mapCard.style.display = 'none';
+        return;
+      }
+      mapCard.style.display = 'block';
+      mapTimestampEl.textContent = new Date(record.timestamp).toLocaleString();
+      mapCoordsEl.textContent = `📍 ${record.latitude}, ${record.longitude}  •  ±${record.accuracy ?? '?'}m`;
+      initMapIfNeeded(record.latitude, record.longitude);
+      // Ensure map resizes correctly if it was initially hidden
+      setTimeout(() => { map && map.invalidateSize(); }, 50);
+    }
+
+    function renderMapFromSaved(){
+      renderMap(readRecord());
+    }
+
+    // ----------------------------- INIT & UI -----------------------------
     async function init(){
       const phone = getPhone();
       if (!phone) {
@@ -152,7 +224,7 @@
         labelPhone.textContent = phone;
         await ensureIPStored();
         switchView('mainView');
-        renderSaved();
+        renderMapFromSaved();
       }
     }
 
@@ -170,7 +242,7 @@
       await ensureIPStored();
       setupMsg.textContent = '';
       switchView('mainView');
-      renderSaved();
+      renderMapFromSaved();
     });
 
     resetOnboarding.addEventListener('click', () => {
@@ -214,10 +286,10 @@
           timestamp: new Date().toISOString(),
         };
 
-        // Save locally
+        // Save locally (replaces previous) and update map
         writeRecord(record);
 
-        // Send to backend
+        // Send to backend (unchanged)
         try {
           const res = await fetch(SUBMIT_URL, {
             method: "POST",
@@ -226,7 +298,7 @@
           });
           if (!res.ok) throw new Error(`Server ${res.status}`);
           output.className = 'ok';
-          output.innerHTML = `Saved locally and sent to service.<br>📍 ${record.latitude}, ${record.longitude} (±${record.accuracy}m)`;
+          output.textContent = 'Saved locally and sent to service.';
         } catch (e) {
           output.className = 'err';
           output.textContent = `Saved locally, but failed to send to service: ${e.message}`;
@@ -245,8 +317,6 @@
       if (rec) { clearRecord(); output.className = 'ok'; output.textContent = 'Deleted your saved location entry (local only).'; }
       else { output.className = 'err'; output.textContent = 'No saved entry to delete.'; }
     });
-
-    refreshBtn.addEventListener('click', renderSaved);
 
     init();
   </script>
