@@ -28,9 +28,9 @@
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
     button { appearance:none; border:0; border-radius: 10px; padding: 10px 16px; font-size: 16px; cursor:pointer; }
     .primary { background: var(--brand); color:white; }
-    .danger { background: #c62828; color:white; }
+    .danger { background: var(--danger); color:white; }
     .ghost { background: #efefef; }
-    #output { min-height: 20px; }
+    #output { min-height: 20px; white-space: pre-wrap; }
     .ok { color: #0a7f2e; }
     .err { color: #b00020; }
 
@@ -113,7 +113,7 @@
 
   <script>
     /* ---------------------- CONFIG: point to your backend ---------------------- */
-    const API_BASE = "https://locationretrievalpoc.onrender.com";
+    const API_BASE = "https://YOUR-BACKEND.example.com"; // <-- change me
     const SUBMIT_URL = API_BASE + "/api/submit";
     const CHECK_IP_API = "https://api.ipify.org?format=json";
 
@@ -139,7 +139,6 @@
     const mapCard = document.getElementById('mapCard');
     const mapTimestampEl = document.getElementById('mapTimestamp');
     const mapCoordsEl = document.getElementById('mapCoords');
-    const savedPre_DEPRECATED = null; // kept for clarity; we don't show JSON anymore
 
     let map;        // Leaflet map instance
     let marker;     // Leaflet marker instance
@@ -180,7 +179,7 @@
       }
     }
 
-    // ----------------------------- MAP RENDERING -----------------------------
+    /* ----------------------------- MAP RENDERING ----------------------------- */
     function initMapIfNeeded(lat, lng){
       if (!map) {
         map = L.map('map');
@@ -206,7 +205,6 @@
       mapTimestampEl.textContent = new Date(record.timestamp).toLocaleString();
       mapCoordsEl.textContent = `📍 ${record.latitude}, ${record.longitude}  •  ±${record.accuracy ?? '?'}m`;
       initMapIfNeeded(record.latitude, record.longitude);
-      // Ensure map resizes correctly if it was initially hidden
       setTimeout(() => { map && map.invalidateSize(); }, 50);
     }
 
@@ -214,7 +212,7 @@
       renderMap(readRecord());
     }
 
-    // ----------------------------- INIT & UI -----------------------------
+    /* ----------------------------- INIT & UI ----------------------------- */
     async function init(){
       const phone = getPhone();
       if (!phone) {
@@ -289,7 +287,7 @@
         // Save locally (replaces previous) and update map
         writeRecord(record);
 
-        // Send to backend (unchanged)
+        // Send to backend: now returns { ok, rule }
         try {
           const res = await fetch(SUBMIT_URL, {
             method: "POST",
@@ -297,8 +295,21 @@
             body: JSON.stringify(record)
           });
           if (!res.ok) throw new Error(`Server ${res.status}`);
+          const data = await res.json();
+
+          // Show rule summary under the buttons
           output.className = 'ok';
-          output.textContent = 'Saved locally and sent to service.';
+          let msg = 'Saved locally and sent to service.';
+          if (data.rule) {
+            const r = data.rule;
+            let line = `Rule nearby (${r.distanceMeters}m): ${r.regulation || '(unspecified)'}`;
+            if (r.days) line += ` | Days: ${r.days}`;
+            if (r.hours) line += ` | Hours: ${r.hours}`;
+            if (r.exceptions) line += ` | ${r.exceptions}`;
+            output.textContent = msg + '\n' + line;
+          } else {
+            output.textContent = msg + '\n(No parking rule found near this point.)';
+          }
         } catch (e) {
           output.className = 'err';
           output.textContent = `Saved locally, but failed to send to service: ${e.message}`;
