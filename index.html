@@ -34,7 +34,6 @@
     .ok { color: #0a7f2e; }
     .err { color: #b00020; }
 
-    /* Map card */
     #mapCard { display:none; }
     #mapMeta { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
     #mapTimestamp { font-weight: 600; }
@@ -44,6 +43,10 @@
     .view { display:none; }
     .view.active { display:block; }
     footer { text-align:center; padding: 16px; color: var(--muted); font-size: 13px; }
+
+    /* New: small list styling for rule + sweeping */
+    .kv { margin-top:6px; padding:8px; background:#fafafa; border:1px solid #eee; border-radius:10px; font-size:14px; }
+    .kv b { font-weight:600; }
   </style>
 </head>
 <body>
@@ -83,7 +86,12 @@
           <button id="saveBtn" class="primary">Save current location</button>
           <button id="deleteBtn" class="danger">Delete my entry (local)</button>
         </div>
+
         <div id="output" class="muted"></div>
+
+        <!-- New: nice display areas -->
+        <div id="parkingBox" class="kv" style="display:none;"></div>
+        <div id="sweepingBox" class="kv" style="display:none;"></div>
       </div>
 
       <!-- Map + timestamp -->
@@ -112,8 +120,8 @@
   ></script>
 
   <script>
-    /* ---------------------- CONFIG: point to your backend ---------------------- */
-    const API_BASE = "https://locationretrievalpoc.onrender.com"; // <-- change me
+    /* ---------------------- CONFIG ---------------------- */
+    const API_BASE = "https://locationretrievalpoc.onrender.com";
     const SUBMIT_URL = API_BASE + "/api/submit";
     const CHECK_IP_API = "https://api.ipify.org?format=json";
 
@@ -138,10 +146,13 @@
     // Map elements
     const mapCard = document.getElementById('mapCard');
     const mapTimestampEl = document.getElementById('mapTimestamp');
-    const mapCoordsEl = document.getElementById('mapCoords');
+    theMapCoordsEl = document.getElementById('mapCoords');
 
-    let map;        // Leaflet map instance
-    let marker;     // Leaflet marker instance
+    // New display boxes
+    const parkingBox = document.getElementById('parkingBox');
+    const sweepingBox = document.getElementById('sweepingBox');
+
+    let map; let marker;
 
     function normalizePhone(raw){ return (raw||'').replace(/[^\d+]/g,''); }
     function getPhone(){ return localStorage.getItem(PHONE_KEY) || null; }
@@ -189,18 +200,12 @@
         }).addTo(map);
       }
       map.setView([lat, lng], 15);
-      if (!marker) {
-        marker = L.marker([lat, lng]).addTo(map);
-      } else {
-        marker.setLatLng([lat, lng]);
-      }
+      if (!marker) marker = L.marker([lat, lng]).addTo(map);
+      else marker.setLatLng([lat, lng]);
     }
 
     function renderMap(record){
-      if (!record) {
-        mapCard.style.display = 'none';
-        return;
-      }
+      if (!record) { mapCard.style.display = 'none'; return; }
       mapCard.style.display = 'block';
       mapTimestampEl.textContent = new Date(record.timestamp).toLocaleString();
       mapCoordsEl.textContent = `📍 ${record.latitude}, ${record.longitude}  •  ±${record.accuracy ?? '?'}m`;
@@ -208,9 +213,7 @@
       setTimeout(() => { map && map.invalidateSize(); }, 50);
     }
 
-    function renderMapFromSaved(){
-      renderMap(readRecord());
-    }
+    function renderMapFromSaved(){ renderMap(readRecord()); }
 
     /* ----------------------------- INIT & UI ----------------------------- */
     async function init(){
@@ -251,6 +254,31 @@
       location.reload();
     });
 
+    function renderParking(rule){
+      if (!rule) { parkingBox.style.display = 'none'; return; }
+      let html = `<b>Nearest parking rule</b> <span class="muted">(${rule.distanceMeters}m)</span><br>`;
+      html += `${rule.regulation || '(unspecified)'}<br>`;
+      if (rule.days) html += `<b>Days:</b> ${rule.days} `;
+      if (rule.hours) html += ` <b>Hours:</b> ${rule.hours}`;
+      if (rule.exceptions) html += `<br><b>Notes:</b> ${rule.exceptions}`;
+      parkingBox.innerHTML = html;
+      parkingBox.style.display = 'block';
+    }
+
+    function renderSweeping(s){
+      if (!s) { sweepingBox.style.display = 'none'; return; }
+      let html = `<b>Street sweeping</b> <span class="muted">(${s.distanceMeters}m)</span><br>`;
+      const street = [s.street, s.limits].filter(Boolean).join(" — ");
+      html += `${street}<br>`;
+      if (s.side) html += `<b>Side:</b> ${s.side} `;
+      if (s.weekday) html += `<b>Day:</b> ${s.weekday} `;
+      if (s.timeWindow) html += `<b>Time:</b> ${s.timeWindow} `;
+      if (s.weeksText) html += `<b>Weeks:</b> ${s.weeksText} `;
+      if (s.holidays) html += `<span class="muted">(runs on holidays)</span>`;
+      sweepingBox.innerHTML = html;
+      sweepingBox.style.display = 'block';
+    }
+
     saveBtn.addEventListener('click', async () => {
       output.className = 'muted';
       output.textContent = 'Requesting location…';
@@ -287,7 +315,7 @@
         // Save locally (replaces previous) and update map
         writeRecord(record);
 
-        // Send to backend: now returns { ok, rule }
+        // Send to backend: now returns { ok, rule, sweep }
         try {
           const res = await fetch(SUBMIT_URL, {
             method: "POST",
@@ -297,22 +325,19 @@
           if (!res.ok) throw new Error(`Server ${res.status}`);
           const data = await res.json();
 
-          // Show rule summary under the buttons
           output.className = 'ok';
-          let msg = 'Saved locally and sent to service.';
-          if (data.rule) {
-            const r = data.rule;
-            let line = `Rule nearby (${r.distanceMeters}m): ${r.regulation || '(unspecified)'}`;
-            if (r.days) line += ` | Days: ${r.days}`;
-            if (r.hours) line += ` | Hours: ${r.hours}`;
-            if (r.exceptions) line += ` | ${r.exceptions}`;
-            output.textContent = msg + '\n' + line;
-          } else {
-            output.textContent = msg + '\n(No parking rule found near this point.)';
+          output.textContent = 'Saved locally and sent to service.';
+          renderParking(data.rule || null);
+          renderSweeping(data.sweep || null);
+          if (!data.rule && !data.sweep) {
+            output.textContent += '\n(No nearby parking rule or sweeping restriction found.)';
           }
         } catch (e) {
           output.className = 'err';
           output.textContent = `Saved locally, but failed to send to service: ${e.message}`;
+          // still clear UI boxes to avoid stale display
+          renderParking(null);
+          renderSweeping(null);
         }
       }, (err) => {
         output.className = 'err';
@@ -327,6 +352,8 @@
       const rec = readRecord();
       if (rec) { clearRecord(); output.className = 'ok'; output.textContent = 'Deleted your saved location entry (local only).'; }
       else { output.className = 'err'; output.textContent = 'No saved entry to delete.'; }
+      renderParking(null);
+      renderSweeping(null);
     });
 
     init();
