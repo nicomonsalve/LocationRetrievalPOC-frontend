@@ -14,7 +14,7 @@
   />
 
   <style>
-    :root { --fg:#111; --muted:#555; --brand:#1a73e8; --danger:#c62828; --card:#f7f7f8; }
+    :root { --fg:#111; --muted:#555; --brand:#1a73e8; --danger:#c62828; }
     * { box-sizing: border-box; }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--fg); margin: 0; }
     header { padding: 24px 16px; text-align: center; background: white; position: sticky; top: 0; border-bottom: 1px solid #eee; }
@@ -44,7 +44,7 @@
     .view.active { display:block; }
     footer { text-align:center; padding: 16px; color: var(--muted); font-size: 13px; }
 
-    /* New: small list styling for rule + sweeping */
+    /* small list styling for rule + sweeping */
     .kv { margin-top:6px; padding:8px; background:#fafafa; border:1px solid #eee; border-radius:10px; font-size:14px; }
     .kv b { font-weight:600; }
   </style>
@@ -52,7 +52,7 @@
 <body>
   <header>
     <h1>Save My Location</h1>
-    <p class="muted">One-time phone capture → then save & see your location on a map</p>
+    <p class="muted">One-time phone capture → then save & see your location on a map. Your saved location’s rules refresh automatically on each visit.</p>
   </header>
 
   <main>
@@ -89,7 +89,7 @@
 
         <div id="output" class="muted"></div>
 
-        <!-- New: nice display areas -->
+        <!-- Display areas -->
         <div id="parkingBox" class="kv" style="display:none;"></div>
         <div id="sweepingBox" class="kv" style="display:none;"></div>
       </div>
@@ -146,9 +146,9 @@
     // Map elements
     const mapCard = document.getElementById('mapCard');
     const mapTimestampEl = document.getElementById('mapTimestamp');
-    const mapCoordsEl = document.getElementById('mapCoords'); // <-- fixed name
+    const mapCoordsEl = document.getElementById('mapCoords');
 
-    // New display boxes
+    // Display boxes
     const parkingBox = document.getElementById('parkingBox');
     const sweepingBox = document.getElementById('sweepingBox');
 
@@ -196,7 +196,7 @@
         map = L.map('map');
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a> contributors'
+          attribution: '&copy; OpenStreetMap contributors'
         }).addTo(map);
       }
       map.setView([lat, lng], 15);
@@ -215,45 +215,7 @@
 
     function renderMapFromSaved(){ renderMap(readRecord()); }
 
-    /* ----------------------------- INIT & UI ----------------------------- */
-    async function init(){
-      const phone = getPhone();
-      if (!phone) {
-        switchView('setupView');
-        const ip = await detectIP(); if (ip) setIP(ip);
-      } else {
-        labelPhone.textContent = phone;
-        await ensureIPStored();
-        switchView('mainView');
-        renderMapFromSaved();
-      }
-    }
-
-    setupSave.addEventListener('click', async () => {
-      setupMsg.className = 'muted';
-      setupMsg.textContent = 'Validating…';
-      const phone = normalizePhone(setupPhone.value);
-      if (!phone || phone.length < 7) {
-        setupMsg.className = 'err';
-        setupMsg.textContent = 'Please enter a valid phone number.';
-        return;
-      }
-      setPhone(phone);
-      labelPhone.textContent = phone;
-      await ensureIPStored();
-      setupMsg.textContent = '';
-      switchView('mainView');
-      renderMapFromSaved();
-    });
-
-    resetOnboarding.addEventListener('click', () => {
-      if (!confirm('This will forget your stored phone and IP on this device. Continue?')) return;
-      localStorage.removeItem(PHONE_KEY);
-      localStorage.removeItem(IP_KEY);
-      localStorage.removeItem(RECORD_KEY);
-      location.reload();
-    });
-
+    /* ----------------------------- RENDER HELPERS ----------------------------- */
     function renderParking(rule){
       if (!rule) { parkingBox.style.display = 'none'; return; }
       let html = `<b>Nearest parking rule</b> <span class="muted">(${rule.distanceMeters}m)</span><br>`;
@@ -278,6 +240,85 @@
       sweepingBox.innerHTML = html;
       sweepingBox.style.display = 'block';
     }
+
+    /* ---------------------- NEW: refresh-on-load behavior ---------------------- */
+    async function recheckRegulationsFromSaved(){
+      const rec = readRecord();
+      if (!rec || typeof rec.latitude !== "number" || typeof rec.longitude !== "number") return;
+
+      // Show whatever we have locally first (old results if present)
+      renderMap(rec);
+      renderParking(rec.rule || null);
+      renderSweeping(rec.sweep || null);
+
+      try {
+        const res = await fetch(SUBMIT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ latitude: rec.latitude, longitude: rec.longitude })
+        });
+        if (!res.ok) throw new Error(`Server ${res.status}`);
+        const data = await res.json();
+
+        // Update UI with fresh data
+        renderParking(data.rule || null);
+        renderSweeping(data.sweep || null);
+
+        // Persist the refreshed results alongside the saved lat/lon
+        writeRecord({ ...rec, rule: data.rule || null, sweep: data.sweep || null, lastChecked: new Date().toISOString() });
+      } catch (e) {
+        console.warn("Recheck failed:", e.message);
+      }
+    }
+
+    /* ----------------------------- INIT & UI ----------------------------- */
+    async function init(){
+      const phone = getPhone();
+      if (!phone) {
+        switchView('setupView');
+        const ip = await detectIP(); if (ip) setIP(ip);
+      } else {
+        labelPhone.textContent = phone;
+        await ensureIPStored();
+        switchView('mainView');
+
+        // Show any saved record (map + possibly cached rules)
+        renderMapFromSaved();
+        const rec = readRecord();
+        if (rec?.rule) renderParking(rec.rule); else renderParking(null);
+        if (rec?.sweep) renderSweeping(rec.sweep); else renderSweeping(null);
+
+        // 🔄 Immediately refresh regulations from backend using saved lat/lon
+        recheckRegulationsFromSaved();
+      }
+    }
+
+    setupSave.addEventListener('click', async () => {
+      setupMsg.className = 'muted';
+      setupMsg.textContent = 'Validating…';
+      const phone = normalizePhone(setupPhone.value);
+      if (!phone || phone.length < 7) {
+        setupMsg.className = 'err';
+        setupMsg.textContent = 'Please enter a valid phone number.';
+        return;
+      }
+      setPhone(phone);
+      labelPhone.textContent = phone;
+      await ensureIPStored();
+      setupMsg.textContent = '';
+      switchView('mainView');
+      renderMapFromSaved();
+      // If they already had a saved record, refresh rules on arrival
+      recheckRegulationsFromSaved();
+    });
+
+    resetOnboarding.addEventListener('click', () => {
+      if (!confirm('This will forget your stored phone and IP on this device. Continue?')) return;
+      localStorage.removeItem(PHONE_KEY);
+      localStorage.removeItem(IP_KEY);
+      localStorage.removeItem(RECORD_KEY);
+      location.reload();
+    });
 
     saveBtn.addEventListener('click', async () => {
       output.className = 'muted';
@@ -314,8 +355,9 @@
 
         // Save locally (replaces previous) and update map
         writeRecord(record);
+        renderMap(record);
 
-        // Send to backend: now returns { ok, rule, sweep }
+        // Send to backend and render rules
         try {
           const res = await fetch(SUBMIT_URL, {
             method: "POST",
@@ -329,13 +371,12 @@
           output.textContent = 'Saved locally and sent to service.';
           renderParking(data.rule || null);
           renderSweeping(data.sweep || null);
-          if (!data.rule && !data.sweep) {
-            output.textContent += '\n(No nearby parking rule or sweeping restriction found.)';
-          }
+
+          // Cache results with the record
+          writeRecord({ ...record, rule: data.rule || null, sweep: data.sweep || null, lastChecked: new Date().toISOString() });
         } catch (e) {
           output.className = 'err';
           output.textContent = `Saved locally, but failed to send to service: ${e.message}`;
-          // still clear UI boxes to avoid stale display
           renderParking(null);
           renderSweeping(null);
         }
