@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Save Phone & Location</title>
 
-  <!-- Leaflet CSS (map) -->
+  <!-- Leaflet CSS -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -44,17 +44,15 @@
     .view.active { display:block; }
     footer { text-align:center; padding: 16px; color: var(--muted); font-size: 13px; }
 
-    /* display boxes */
     .kv { margin-top:6px; padding:8px; background:#fafafa; border:1px solid #eee; border-radius:10px; font-size:14px; }
     .kv b { font-weight:600; }
-    .timer { margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .timer { margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   </style>
 </head>
 <body>
   <header>
     <h1>Save My Location</h1>
     <p class="muted">
-      One-time phone capture → then save & see your location on a map.
       Rules refresh automatically on each visit. Timers show time since parked and time until next sweeping.
     </p>
   </header>
@@ -71,7 +69,9 @@
           <button id="setupSave" class="primary">Continue</button>
           <span id="setupMsg" class="muted"></span>
         </div>
-        <p class="muted">We tie your phone to your current public IP and store locally; on save, we also send it to the service.</p>
+        <p class="muted">
+          We tie your phone to your current public IP and store locally; on save, we also send it to the service.
+        </p>
       </div>
     </section>
 
@@ -124,118 +124,109 @@
   ></script>
 
   <script>
-    /* ---------------------- CONFIG ---------------------- */
-    const API_BASE = "https://locationretrievalpoc.onrender.com";
-    const SUBMIT_URL = API_BASE + "/api/submit";
+    /* ======================== CONFIG ======================== */
+    const API_BASE     = "https://locationretrievalpoc.onrender.com";
+    const SUBMIT_URL   = API_BASE + "/api/submit";
     const CHECK_IP_API = "https://api.ipify.org?format=json";
 
-    /* ------------------------- Local storage + helpers ------------------------- */
-    const PHONE_KEY = 'userPhone';
-    const IP_KEY = 'userIP';
-    const RECORD_KEY = 'submission';
+    /* ================== Local storage helpers ================= */
+    const PHONE_KEY  = "userPhone";
+    const IP_KEY     = "userIP";
+    const RECORD_KEY = "submission";
 
-    const setupView = document.getElementById('setupView');
-    const mainView = document.getElementById('mainView');
-    const setupPhone = document.getElementById('setupPhone');
-    const setupSave = document.getElementById('setupSave');
-    const setupMsg = document.getElementById('setupMsg');
+    const setupView       = document.getElementById("setupView");
+    const mainView        = document.getElementById("mainView");
+    const setupPhone      = document.getElementById("setupPhone");
+    const setupSave       = document.getElementById("setupSave");
+    const setupMsg        = document.getElementById("setupMsg");
+    const labelPhone      = document.getElementById("labelPhone");
+    const labelIP         = document.getElementById("labelIP");
+    const saveBtn         = document.getElementById("saveBtn");
+    const deleteBtn       = document.getElementById("deleteBtn");
+    const resetOnboarding = document.getElementById("resetOnboarding");
+    const output          = document.getElementById("output");
+    const mapCard         = document.getElementById("mapCard");
+    const mapTimestampEl  = document.getElementById("mapTimestamp");
+    const mapCoordsEl     = document.getElementById("mapCoords");
+    const parkingBox      = document.getElementById("parkingBox");
+    const sweepingBox     = document.getElementById("sweepingBox");
 
-    const labelPhone = document.getElementById('labelPhone');
-    const labelIP = document.getElementById('labelIP');
-    const saveBtn = document.getElementById('saveBtn');
-    const deleteBtn = document.getElementById('deleteBtn');
-    const resetOnboarding = document.getElementById('resetOnboarding');
-    const output = document.getElementById('output');
-
-    // Map elements
-    const mapCard = document.getElementById('mapCard');
-    const mapTimestampEl = document.getElementById('mapTimestamp');
-    const mapCoordsEl = document.getElementById('mapCoords');
-
-    // Display boxes
-    const parkingBox = document.getElementById('parkingBox');
-    const sweepingBox = document.getElementById('sweepingBox');
-
-    // timer state
-    let parkingInterval = null;
+    let map, marker;
+    let parkingInterval  = null;
     let sweepingInterval = null;
 
-    let map; let marker;
+    function normalizePhone(raw) { return (raw || "").replace(/[^\d+]/g, ""); }
+    function getPhone()          { return localStorage.getItem(PHONE_KEY) || null; }
+    function setPhone(v)         { localStorage.setItem(PHONE_KEY, v); }
+    function getIP()             { return localStorage.getItem(IP_KEY) || null; }
+    function setIP(v)            { localStorage.setItem(IP_KEY, v); }
 
-    function normalizePhone(raw){ return (raw||'').replace(/[^\d+]/g,''); }
-    function getPhone(){ return localStorage.getItem(PHONE_KEY) || null; }
-    function setPhone(v){ localStorage.setItem(PHONE_KEY, v); }
-    function getIP(){ return localStorage.getItem(IP_KEY) || null; }
-    function setIP(v){ localStorage.setItem(IP_KEY, v); }
-
-    function readRecord(){ try { return JSON.parse(localStorage.getItem(RECORD_KEY) || 'null'); } catch { return null; } }
-    function writeRecord(obj){ localStorage.setItem(RECORD_KEY, JSON.stringify(obj, null, 2)); renderMapFromSaved(); }
-    function clearRecord(){ localStorage.removeItem(RECORD_KEY); renderMapFromSaved(); }
-
-    function switchView(name){
-      for (const el of document.querySelectorAll('.view')) el.classList.remove('active');
-      document.getElementById(name).classList.add('active');
+    function readRecord() {
+      try { return JSON.parse(localStorage.getItem(RECORD_KEY) || "null"); }
+      catch { return null; }
+    }
+    function writeRecord(obj) {
+      localStorage.setItem(RECORD_KEY, JSON.stringify(obj, null, 2));
+      renderMapFromSaved();
+    }
+    function clearRecord() {
+      localStorage.removeItem(RECORD_KEY);
+      renderMapFromSaved();
     }
 
-    async function detectIP(){
+    function switchView(name) {
+      for (const el of document.querySelectorAll(".view")) el.classList.remove("active");
+      document.getElementById(name).classList.add("active");
+    }
+
+    async function detectIP() {
       try {
-        const c = await fetch(CHECK_IP_API, {cache:'no-store'});
-        if (!c.ok) throw new Error('non-200');
+        const c = await fetch(CHECK_IP_API, { cache: "no-store" });
+        if (!c.ok) throw new Error();
         const { ip } = await c.json();
         return ip || null;
       } catch { return null; }
     }
 
-    async function ensureIPStored(){
+    async function ensureIPStored() {
       let ip = getIP();
       if (!ip) {
-        labelIP.textContent = 'detecting…';
+        labelIP.textContent = "detecting…";
         ip = await detectIP();
         if (ip) { setIP(ip); labelIP.textContent = ip; }
-        else { labelIP.textContent = '(unavailable)'; }
+        else    { labelIP.textContent = "(unavailable)"; }
       } else {
         labelIP.textContent = ip;
       }
     }
 
-    /* ----------------------------- MAP RENDERING ----------------------------- */
-    function initMapIfNeeded(lat, lng){
+    /* ===================== Map rendering ===================== */
+    function initMapIfNeeded(lat, lng) {
       if (!map) {
-        map = L.map('map');
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        map = L.map("map");
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           maxZoom: 19,
-          attribution: '&copy; OpenStreetMap contributors'
+          attribution: "&copy; OpenStreetMap contributors",
         }).addTo(map);
       }
       map.setView([lat, lng], 15);
       if (!marker) marker = L.marker([lat, lng]).addTo(map);
       else marker.setLatLng([lat, lng]);
+      setTimeout(() => map && map.invalidateSize(), 50);
     }
 
-    function renderMap(record){
-      if (!record) { mapCard.style.display = 'none'; return; }
-      mapCard.style.display = 'block';
+    function renderMap(record) {
+      if (!record) { mapCard.style.display = "none"; return; }
+      mapCard.style.display = "block";
       mapTimestampEl.textContent = new Date(record.timestamp).toLocaleString();
-      mapCoordsEl.textContent = `📍 ${record.latitude}, ${record.longitude}  •  ±${record.accuracy ?? '?'}m`;
+      mapCoordsEl.textContent   = `📍 ${record.latitude}, ${record.longitude}  •  ±${record.accuracy ?? "?"}m`;
       initMapIfNeeded(record.latitude, record.longitude);
-      setTimeout(() => { map && map.invalidateSize(); }, 50);
     }
+    function renderMapFromSaved() { renderMap(readRecord()); }
 
-    function renderMapFromSaved(){ renderMap(readRecord()); }
+    /* ======================== Time utils ======================== */
 
-    /* ----------------------------- TIME / PARSERS ----------------------------- */
-
-    // Best-effort timezone: browser timezone (closest we can do without a geotz API)
-    function getLocationTime(date = new Date()){
-      // If you later add a server tz lookup, pass an IANA tz here
-      const fmt = new Intl.DateTimeFormat([], {
-        year:'numeric', month:'2-digit', day:'2-digit',
-        hour:'2-digit', minute:'2-digit', second:'2-digit',
-        hour12:false
-      });
-      return date; // Date object is fine; we only need local components via Date methods
-    }
-
+    // Day names to 0..6
     const DAY_MAP = {
       "sun":0, "sunday":0,
       "mon":1, "monday":1,
@@ -246,19 +237,18 @@
       "sat":6, "saturday":6
     };
 
-    // Parse a DAYS string like "Mon-Fri" or "Mon, Wed, Fri"
-    function parseDays(daysStr){
+    function parseDays(daysStr) {
       if (!daysStr) return null;
-      const s = String(daysStr).toLowerCase().replace(/\s+/g,'').replace(/&/g,',');
+      const s = String(daysStr).toLowerCase().replace(/\s+/g, "").replace(/&/g, ",");
       const result = new Set();
 
-      // split by commas
-      for (const part of s.split(',')) {
+      for (const part of s.split(",")) {
         if (!part) continue;
-        if (part.includes('-')) {
-          const [a,b] = part.split('-');
-          const start = DAY_MAP[a]; const end = DAY_MAP[b];
-          if (start==null || end==null) continue;
+
+        if (part.includes("-")) {
+          const [a, b] = part.split("-");
+          const start = DAY_MAP[a], end = DAY_MAP[b];
+          if (start == null || end == null) continue;
           let d = start;
           while (true) {
             result.add(d);
@@ -267,194 +257,190 @@
           }
         } else {
           const d = DAY_MAP[part];
-          if (d!=null) result.add(d);
+          if (d != null) result.add(d);
         }
       }
       return result.size ? result : null;
     }
 
-    // Hours: use numeric from/to if provided; otherwise parse "7–9" / "7-9"
-    function getWindowFromTo(rule){
-      // parking: may have fromTime/toTime as strings; sweeping: numbers
-      const ft = rule.fromTime ?? rule.fromHour ?? null;
-      const tt = rule.toTime ?? rule.toHour ?? null;
-
-      let from = (ft!=null && ft!=="") ? Number(ft) : null;
-      let to   = (tt!=null && tt!=="") ? Number(tt) : null;
-
-      if ((from==null || !Number.isFinite(from)) || (to==null || !Number.isFinite(to))) {
-        // try parse "HOURS" or "timeWindow"
-        const windowStr = rule.hours || rule.timeWindow || "";
-        const m = windowStr.match(/(\d{1,2})\s*[–-]\s*(\d{1,2})/);
-        if (m) { from = Number(m[1]); to = Number(m[2]); }
+    function hhmmToHours(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return null;
+      if (v >= 100) {
+        const hh = Math.floor(v / 100);
+        const mm = v % 100;
+        return hh + (mm / 60);
       }
-      if (from!=null && to!=null) {
-        from = Math.max(0, Math.min(24, from));
-        to   = Math.max(0, Math.min(24, to));
-      }
-      return (from!=null && to!=null) ? { from, to } : null;
+      return v;
     }
 
-    function isWithinWindow(from, to, date = new Date()){
-      // returns true if local current hour is within [from, to)
-      const h = date.getHours() + date.getMinutes()/60 + date.getSeconds()/3600;
-      if (from <= to) return h >= from && h < to;
-      // crosses midnight (e.g., 22–2)
-      return h >= from || h < to;
+    // Extract a [from,to) window from rule
+    function getWindowFromTo(rule) {
+      const rawFrom = rule.fromTime ?? rule.fromHour ?? null;
+      const rawTo   = rule.toTime   ?? rule.toHour   ?? null;
+
+      let from = hhmmToHours(rawFrom);
+      let to   = hhmmToHours(rawTo);
+
+      if (from == null || to == null) {
+        const windowStr = String(rule.hours || rule.timeWindow || "").replace(/\s/g, "");
+        const m = windowStr.match(/(\d{1,4})\s*[–-]\s*(\d{1,4})/);
+        if (m) { from = hhmmToHours(m[1]); to = hhmmToHours(m[2]); }
+      }
+
+      if (from == null || to == null) return null;
+      from = Math.max(0, Math.min(24, from));
+      to   = Math.max(0, Math.min(24, to));
+      return { from, to };
     }
 
-    function isTodayAllowed(daysStr, date = new Date()){
+    function isWithinWindow(from, to, date = new Date()) {
+      const h = date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600;
+      return (from <= to) ? (h >= from && h < to) : (h >= from || h < to); // handles wrap past midnight
+    }
+
+    function isTodayAllowed(daysStr, date = new Date()) {
       const set = parseDays(daysStr);
-      if (!set) return true; // if unknown, assume allowed
+      if (!set) return true;
       return set.has(date.getDay());
     }
 
-    /* ----------------------------- RENDER HELPERS ----------------------------- */
-    function humanHMS(ms){
-      const s = Math.max(0, Math.floor(ms/1000));
-      const hh = Math.floor(s/3600).toString().padStart(2,'0');
-      const mm = Math.floor((s%3600)/60).toString().padStart(2,'0');
-      const ss = Math.floor(s%60).toString().padStart(2,'0');
+    function humanHMS(ms) {
+      const s  = Math.max(0, Math.floor(ms / 1000));
+      const hh = Math.floor(s / 3600).toString().padStart(2, "0");
+      const mm = Math.floor((s % 3600) / 60).toString().padStart(2, "0");
+      const ss = Math.floor(s % 60).toString().padStart(2, "0");
       return `${hh}:${mm}:${ss}`;
     }
 
-    function renderParking(rule, record){
-      // clear any existing timer
-      if (parkingInterval) { clearInterval(parkingInterval); parkingInterval = null; }
-
-      if (!rule) { parkingBox.style.display = 'none'; return; }
-
-      let html = `<b>Nearest parking rule</b> <span class="muted">(${rule.distanceMeters}m)</span><br>`;
-      html += `${rule.regulation || '(unspecified)'}<br>`;
-      if (rule.days) html += `<b>Days:</b> ${rule.days} `;
-      if (rule.hours) html += ` <b>Hours:</b> ${rule.hours}`;
-      if (rule.exceptions) html += `<br><b>Notes:</b> ${rule.exceptions}`;
-
-      // Timer area
-      html += `<div id="parkingTimer" class="timer" style="display:none;"></div>`;
-      parkingBox.innerHTML = html;
-      parkingBox.style.display = 'block';
-
-      // Only show count-up "since parked" if we’re currently inside restriction AND we know when we parked.
-      if (!record || !record.timestamp) return;
-
-      const window = getWindowFromTo(rule);
-      const now = getLocationTime();
-      const within = window && isTodayAllowed(rule.days||"", now) && isWithinWindow(window.from, window.to, now);
-
-      if (within) {
-        const timerEl = document.getElementById('parkingTimer');
-        timerEl.style.display = 'block';
-        const parkedAt = new Date(record.timestamp).getTime();
-
-        const tick = () => {
-          const nowMs = Date.now();
-          timerEl.textContent = `⏱️ Time since parked (within restriction): ${humanHMS(nowMs - parkedAt)}`;
-        };
-        tick();
-        parkingInterval = setInterval(tick, 1000);
-      }
+    function weekOfMonth(date) {
+      // 1..5, weeks start Sunday
+      const first = new Date(date.getFullYear(), date.getMonth(), 1).getDay(); // 0..6
+      return Math.floor((date.getDate() + first - 1) / 7) + 1;
     }
 
-    function weekOfMonth(date){
-      // 1..5 (ISO-ish): count weeks starting on Sunday
-      const d = new Date(date.getFullYear(), date.getMonth(), 1);
-      const firstDay = d.getDay(); // 0=Sun
-      return Math.floor((date.getDate() + firstDay - 1) / 7) + 1;
-    }
-
-    function findNextSweepingDate(s){
-      // Requires: s.weekday (string), s.weeks {1..5:boolean}, s.fromHour/toHour (numbers if present)
+    function findNextSweepingDate(s) {
+      // s.weekday (string),
+      // s.weeks: {1..5:true/false},
+      // s.fromHour / s.toHour (numbers like 9, 11 or 900, 1100)
       const wd = (s.weekday || "").toLowerCase();
       const targetDow = DAY_MAP[wd] ?? null;
       if (targetDow == null) return null;
 
-      const hasWeek = s.weeks && Object.values(s.weeks).some(Boolean);
+      const hasWeekFlags = s.weeks && Object.values(s.weeks).some(Boolean);
       const now = new Date();
 
-      // search current month then next month for the next (weekIndex & weekday) that is >= now
       for (let addMonth = 0; addMonth < 2; addMonth++) {
         const base = new Date(now.getFullYear(), now.getMonth() + addMonth, 1, 0, 0, 0, 0);
-        const month = base.getMonth(); const year = base.getFullYear();
+        const year = base.getFullYear();
+        const month = base.getMonth();
 
-        // iterate days of this month
         for (let day = 1; day <= 31; day++) {
           const dt = new Date(year, month, day, 0, 0, 0, 0);
           if (dt.getMonth() !== month) break;
           if (dt.getDay() !== targetDow) continue;
 
           const wk = weekOfMonth(dt);
-          if (hasWeek && !s.weeks[wk]) continue;
+          if (hasWeekFlags && !s.weeks[wk]) continue;
 
-          // build candidate at fromHour
-          const fromHour = (s.fromHour!=null) ? Number(s.fromHour) : 0;
-          const candidate = new Date(year, month, day, fromHour, 0, 0, 0);
+          const fromHour = (s.fromHour != null) ? Number(s.fromHour) : 0;
+          const start = new Date(year, month, day, hhmmToHours(fromHour) || 0, 0, 0, 0);
 
-          if (candidate.getTime() >= now.getTime()) {
-            return candidate;
-          }
+          if (start.getTime() >= now.getTime()) return start;
         }
       }
       return null;
     }
 
-    function renderSweeping(s){
-      if (sweepingInterval) { clearInterval(sweepingInterval); sweepingInterval = null; }
+    /* ====================== Render helpers ====================== */
+    function renderParking(rule, record) {
+      if (parkingInterval) { clearInterval(parkingInterval); parkingInterval = null; }
+      if (!rule) { parkingBox.style.display = "none"; return; }
 
-      if (!s) { sweepingBox.style.display = 'none'; return; }
+      let html = `<b>Nearest parking rule</b> <span class="muted">(${rule.distanceMeters}m)</span><br>`;
+      html += `${rule.regulation || "(unspecified)"}<br>`;
+      if (rule.days)      html += `<b>Days:</b> ${rule.days} `;
+      if (rule.hours)     html += ` <b>Hours:</b> ${rule.hours}`;
+      if (rule.exceptions)html += `<br><b>Notes:</b> ${rule.exceptions}`;
+      html += `<div id="parkingTimer" class="timer" style="display:none;"></div>`;
+
+      parkingBox.innerHTML = html;
+      parkingBox.style.display = "block";
+
+      // Only show count-up while inside the restriction window (today + hours)
+      if (!record || !record.timestamp) return;
+      const window = getWindowFromTo(rule);
+      const now    = new Date();
+      const within = window && isTodayAllowed(rule.days || "", now) && isWithinWindow(window.from, window.to, now);
+
+      if (within) {
+        const el = document.getElementById("parkingTimer");
+        el.style.display = "block";
+        const parkedAt = new Date(record.timestamp).getTime();
+
+        const tick = () => {
+          el.textContent = `⏱️ Time since parked (within restriction): ${humanHMS(Date.now() - parkedAt)}`;
+        };
+        tick();
+        parkingInterval = setInterval(tick, 1000);
+      }
+    }
+
+    function renderSweeping(s) {
+      if (sweepingInterval) { clearInterval(sweepingInterval); sweepingInterval = null; }
+      if (!s) { sweepingBox.style.display = "none"; return; }
 
       let html = `<b>Street sweeping</b> <span class="muted">(${s.distanceMeters}m)</span><br>`;
       const street = [s.street, s.limits].filter(Boolean).join(" — ");
       html += `${street}<br>`;
-      if (s.side) html += `<b>Side:</b> ${s.side} `;
-      if (s.weekday) html += `<b>Day:</b> ${s.weekday} `;
-      if (s.timeWindow) html += `<b>Time:</b> ${s.timeWindow} `;
+      if (s.side)      html += `<b>Side:</b> ${s.side} `;
+      if (s.weekday)   html += `<b>Day:</b> ${s.weekday} `;
+      if (s.timeWindow)html += `<b>Time:</b> ${s.timeWindow} `;
       if (s.weeksText) html += `<b>Weeks:</b> ${s.weeksText} `;
-      if (s.holidays) html += `<span class="muted">(runs on holidays)</span>`;
+      if (s.holidays)  html += `<span class="muted">(runs on holidays)</span>`;
 
       html += `<div id="sweepingTimer" class="timer" style="display:block;"></div>`;
       sweepingBox.innerHTML = html;
-      sweepingBox.style.display = 'block';
+      sweepingBox.style.display = "block";
 
-      // Countdown to next window start
       const next = findNextSweepingDate(s);
-      const timerEl = document.getElementById('sweepingTimer');
+      const el   = document.getElementById("sweepingTimer");
 
       if (!next) {
-        timerEl.textContent = "⏳ Next sweeping time: unavailable";
+        el.textContent = "⏳ Next sweeping time: unavailable";
         return;
       }
 
-      function humanCountdown(ms){
-        const total = Math.max(0, Math.floor(ms/1000));
+      const humanCountdown = (ms) => {
+        const total = Math.max(0, Math.floor(ms / 1000));
         const d = Math.floor(total / 86400);
-        const h = Math.floor((total % 86400) / 3600).toString().padStart(2,'0');
-        const m = Math.floor((total % 3600) / 60).toString().padStart(2,'0');
-        const ssec = Math.floor(total % 60).toString().padStart(2,'0');
-        return (d ? d + "d " : "") + `${h}:${m}:${ssec}`;
-      }
+        const h = Math.floor((total % 86400) / 3600).toString().padStart(2, "0");
+        const m = Math.floor((total % 3600) / 60).toString().padStart(2, "0");
+        const s = Math.floor(total % 60).toString().padStart(2, "0");
+        return (d ? d + "d " : "") + `${h}:${m}:${s}`;
+      };
 
       const tick = () => {
         const ms = next.getTime() - Date.now();
         if (ms <= 0) {
-          timerEl.textContent = "🚧 Sweeping in effect now (window starting)";
+          el.textContent = "🚧 Sweeping in effect now";
           clearInterval(sweepingInterval);
           sweepingInterval = null;
         } else {
-          const when = next.toLocaleString();
-          timerEl.textContent = `⏳ Time until next sweeping: ${humanCountdown(ms)}  (at ${when})`;
+          el.textContent = `⏳ Time until next sweeping: ${humanCountdown(ms)} (at ${next.toLocaleString()})`;
         }
       };
+
       tick();
       sweepingInterval = setInterval(tick, 1000);
     }
 
-    /* ---------------------- NEW: refresh-on-load behavior ---------------------- */
-    async function recheckRegulationsFromSaved(){
+    /* ============== Refresh regs on page load if saved ============== */
+    async function recheckRegulationsFromSaved() {
       const rec = readRecord();
       if (!rec || typeof rec.latitude !== "number" || typeof rec.longitude !== "number") return;
 
-      // Show whatever we have locally first (old results if present)
+      // Show cached view first
       renderMap(rec);
       renderParking(rec.rule || null, rec);
       renderSweeping(rec.sweep || null);
@@ -463,85 +449,90 @@
         const res = await fetch(SUBMIT_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ latitude: rec.latitude, longitude: rec.longitude })
+          body: JSON.stringify({ latitude: rec.latitude, longitude: rec.longitude }),
         });
         if (!res.ok) throw new Error(`Server ${res.status}`);
         const data = await res.json();
 
-        // Update UI with fresh data
         renderParking(data.rule || null, rec);
         renderSweeping(data.sweep || null);
 
-        // Persist the refreshed results alongside the saved lat/lon
-        writeRecord({ ...rec, rule: data.rule || null, sweep: data.sweep || null, lastChecked: new Date().toISOString() });
+        writeRecord({
+          ...rec,
+          rule: data.rule || null,
+          sweep: data.sweep || null,
+          lastChecked: new Date().toISOString(),
+        });
       } catch (e) {
         console.warn("Recheck failed:", e.message);
       }
     }
 
-    /* ----------------------------- INIT & UI ----------------------------- */
-    async function init(){
+    /* ========================== INIT + UI ========================== */
+    async function init() {
       const phone = getPhone();
       if (!phone) {
-        switchView('setupView');
+        switchView("setupView");
         const ip = await detectIP(); if (ip) setIP(ip);
       } else {
         labelPhone.textContent = phone;
         await ensureIPStored();
-        switchView('mainView');
+        switchView("mainView");
 
-        // Show any saved record (map + possibly cached rules)
+        // Any saved record?
         renderMapFromSaved();
         const rec = readRecord();
-        if (rec?.rule) renderParking(rec.rule, rec); else renderParking(null, rec);
-        if (rec?.sweep) renderSweeping(rec.sweep); else renderSweeping(null);
+        renderParking(rec?.rule || null, rec || null);
+        renderSweeping(rec?.sweep || null);
 
-        // Refresh regulations from backend using saved lat/lon
+        // Always refresh from backend with saved lat/lon
         recheckRegulationsFromSaved();
       }
     }
 
-    setupSave.addEventListener('click', async () => {
-      setupMsg.className = 'muted';
-      setupMsg.textContent = 'Validating…';
+    setupSave.addEventListener("click", async () => {
+      setupMsg.className = "muted";
+      setupMsg.textContent = "Validating…";
+
       const phone = normalizePhone(setupPhone.value);
       if (!phone || phone.length < 7) {
-        setupMsg.className = 'err';
-        setupMsg.textContent = 'Please enter a valid phone number.';
+        setupMsg.className = "err";
+        setupMsg.textContent = "Please enter a valid phone number.";
         return;
       }
       setPhone(phone);
       labelPhone.textContent = phone;
       await ensureIPStored();
-      setupMsg.textContent = '';
-      switchView('mainView');
+
+      setupMsg.textContent = "";
+      switchView("mainView");
       renderMapFromSaved();
       recheckRegulationsFromSaved();
     });
 
-    resetOnboarding.addEventListener('click', () => {
-      if (!confirm('This will forget your stored phone and IP on this device. Continue?')) return;
+    resetOnboarding.addEventListener("click", () => {
+      if (!confirm("Forget your stored phone and IP on this device?")) return;
       localStorage.removeItem(PHONE_KEY);
       localStorage.removeItem(IP_KEY);
       localStorage.removeItem(RECORD_KEY);
       location.reload();
     });
 
-    saveBtn.addEventListener('click', async () => {
-      output.className = 'muted';
-      output.textContent = 'Requesting location…';
+    saveBtn.addEventListener("click", async () => {
+      output.className = "muted";
+      output.textContent = "Requesting location…";
 
-      if (!('geolocation' in navigator)) {
-        output.className = 'err';
-        output.textContent = 'Geolocation is not supported by this browser.';
+      if (!("geolocation" in navigator)) {
+        output.className = "err";
+        output.textContent = "Geolocation is not supported by this browser.";
         return;
       }
 
       const phone = getPhone();
       if (!phone) {
-        output.className = 'err';
-        output.textContent = 'No phone on file. Please complete setup.';
-        switchView('setupView');
+        output.className = "err";
+        output.textContent = "No phone on file. Please complete setup.";
+        switchView("setupView");
         return;
       }
 
@@ -553,56 +544,59 @@
         const { latitude, longitude, accuracy } = pos.coords;
         const record = {
           phone,
-          ip: ip || '(unavailable)',
+          ip: ip || "(unavailable)",
           latitude: Number(latitude.toFixed(6)),
           longitude: Number(longitude.toFixed(6)),
           accuracy: Number.isFinite(accuracy) ? Math.round(accuracy) : null,
           timestamp: new Date().toISOString(),
         };
 
-        // Save locally (replaces previous) and update map
         writeRecord(record);
         renderMap(record);
 
-        // Send to backend and render rules
         try {
           const res = await fetch(SUBMIT_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(record)
+            body: JSON.stringify(record),
           });
           if (!res.ok) throw new Error(`Server ${res.status}`);
           const data = await res.json();
 
-          output.className = 'ok';
-          output.textContent = 'Saved locally and sent to service.';
+          output.className = "ok";
+          output.textContent = "Saved locally and sent to service.";
           renderParking(data.rule || null, record);
           renderSweeping(data.sweep || null);
 
-          // Cache results with the record
-          writeRecord({ ...record, rule: data.rule || null, sweep: data.sweep || null, lastChecked: new Date().toISOString() });
+          writeRecord({
+            ...record,
+            rule: data.rule || null,
+            sweep: data.sweep || null,
+            lastChecked: new Date().toISOString(),
+          });
         } catch (e) {
-          output.className = 'err';
+          output.className = "err";
           output.textContent = `Saved locally, but failed to send to service: ${e.message}`;
           renderParking(null, record);
           renderSweeping(null);
         }
       }, (err) => {
-        output.className = 'err';
-        if (err.code === err.PERMISSION_DENIED) output.textContent = 'Permission denied. Please allow location access.';
-        else if (err.code === err.POSITION_UNAVAILABLE) output.textContent = 'Location unavailable.';
-        else if (err.code === err.TIMEOUT) output.textContent = 'Timed out getting location.';
-        else output.textContent = 'Unknown error getting location.';
+        output.className = "err";
+        if (err.code === err.PERMISSION_DENIED)    output.textContent = "Permission denied. Please allow location access.";
+        else if (err.code === err.POSITION_UNAVAILABLE) output.textContent = "Location unavailable.";
+        else if (err.code === err.TIMEOUT)          output.textContent = "Timed out getting location.";
+        else                                        output.textContent = "Unknown error getting location.";
       }, options);
     });
 
-    deleteBtn.addEventListener('click', () => {
+    deleteBtn.addEventListener("click", () => {
       const rec = readRecord();
-      if (rec) { clearRecord(); output.className = 'ok'; output.textContent = 'Deleted your saved location entry (local only).'; }
-      else { output.className = 'err'; output.textContent = 'No saved entry to delete.'; }
-      if (parkingInterval) { clearInterval(parkingInterval); parkingInterval = null; }
+      if (rec) { clearRecord(); output.className = "ok"; output.textContent = "Deleted your saved location entry (local only)."; }
+      else     { output.className = "err"; output.textContent = "No saved entry to delete."; }
+
+      if (parkingInterval)  { clearInterval(parkingInterval);  parkingInterval  = null; }
       if (sweepingInterval) { clearInterval(sweepingInterval); sweepingInterval = null; }
-      renderParking(null);
+      renderParking(null, null);
       renderSweeping(null);
     });
 
