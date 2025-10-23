@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Save Phone & Location</title>
+  <style>
+    :root { --fg:#111; --muted:#555; --brand:#1a73e8; --danger:#c62828; --card:#f7f7f8; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color: var(--fg); margin: 0; }
+    header { padding: 24px 16px; text-align: center; background: white; position: sticky; top: 0; border-bottom: 1px solid #eee; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+    h1 { margin: 0 0 8px; }
+    p.muted { color: var(--muted); margin-top: 4px; }
+    .card { background: white; border: 1px solid #e6e6e6; border-radius: 14px; padding: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .stack { display: grid; gap: 12px; }
+    label { font-weight: 600; display:block; margin-bottom: 6px; }
+    input[type="tel"] { width: 100%; padding: 12px; border: 1px solid #d0d0d0; border-radius: 10px; font-size: 16px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    button { appearance:none; border:0; border-radius: 10px; padding: 10px 16px; font-size: 16px; cursor:pointer; }
+    .primary { background: var(--brand); color:white; }
+    .danger { background: var(--danger); color:white; }
+    .ghost { background: #efefef; }
+    #output { min-height: 20px; }
+    .ok { color: #0a7f2e; }
+    .err { color: #b00020; }
+    pre { background: var(--card); padding: 12px; border-radius: 10px; overflow:auto; }
+    .view { display:none; }
+    .view.active { display:block; }
+    footer { text-align:center; padding: 16px; color: var(--muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Save My Location</h1>
+    <p class="muted">One-time phone capture → then save & manage your location</p>
+  </header>
+  <main>
+    <!-- SETUP VIEW -->
+    <section id="setupView" class="view">
+      <div class="card stack">
+        <div>
+          <label for="setupPhone">Enter your phone number (one time)</label>
+          <input id="setupPhone" type="tel" inputmode="tel" placeholder="+1 415 555 0123" autocomplete="tel" />
+        </div>
+        <div class="row">
+          <button id="setupSave" class="primary">Continue</button>
+          <span id="setupMsg" class="muted"></span>
+        </div>
+        <p class="muted">We tie your phone to your current public IP and store locally; on save, we also send it to the service.</p>
+      </div>
+    </section>
+
+    <!-- MAIN VIEW -->
+    <section id="mainView" class="view">
+      <div class="card stack">
+        <div class="row" style="justify-content:space-between; align-items:start;">
+          <div>
+            <div><strong>Phone:</strong> <span id="labelPhone">—</span></div>
+            <div><strong>IP:</strong> <span id="labelIP">(detecting…)</span></div>
+          </div>
+          <button id="resetOnboarding" class="ghost" title="Forget phone & IP and start over">Reset setup</button>
+        </div>
+
+        <div class="row">
+          <button id="saveBtn" class="primary">Save current location</button>
+          <button id="deleteBtn" class="danger">Delete my entry (local)</button>
+        </div>
+        <div id="output" class="muted"></div>
+      </div>
+
+      <div style="height:12px"></div>
+
+      <div class="card stack">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <strong>Saved record (local)</strong>
+          <button id="refreshBtn" class="ghost">Refresh</button>
+        </div>
+        <pre id="savedPre">(none)</pre>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Privacy: phone, IP, and location are stored in your browser and (on save) also sent to this service for admin viewing.
+  </footer>
+
+  <script>
+    /* ---------------------- CONFIG: point to your backend ---------------------- */
+    const API_BASE = "https://YOUR-BACKEND.example.com"; // <-- change me
+    const SUBMIT_URL = API_BASE + "/api/submit";
+    const CHECK_IP_API = "https://api.ipify.org?format=json";
+
+    /* ------------------------- Local storage + helpers ------------------------- */
+    const PHONE_KEY = 'userPhone';
+    const IP_KEY = 'userIP';
+    const RECORD_KEY = 'submission';
+
+    const setupView = document.getElementById('setupView');
+    const mainView = document.getElementById('mainView');
+    const setupPhone = document.getElementById('setupPhone');
+    const setupSave = document.getElementById('setupSave');
+    const setupMsg = document.getElementById('setupMsg');
+
+    const labelPhone = document.getElementById('labelPhone');
+    const labelIP = document.getElementById('labelIP');
+    const saveBtn = document.getElementById('saveBtn');
+    const deleteBtn = document.getElementById('deleteBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const resetOnboarding = document.getElementById('resetOnboarding');
+    const output = document.getElementById('output');
+    const savedPre = document.getElementById('savedPre');
+
+    function normalizePhone(raw){ return (raw||'').replace(/[^\d+]/g,''); }
+    function getPhone(){ return localStorage.getItem(PHONE_KEY) || null; }
+    function setPhone(v){ localStorage.setItem(PHONE_KEY, v); }
+    function getIP(){ return localStorage.getItem(IP_KEY) || null; }
+    function setIP(v){ localStorage.setItem(IP_KEY, v); }
+    function readRecord(){ try { return JSON.parse(localStorage.getItem(RECORD_KEY) || 'null'); } catch { return null; } }
+    function writeRecord(obj){ localStorage.setItem(RECORD_KEY, JSON.stringify(obj, null, 2)); renderSaved(); }
+    function clearRecord(){ localStorage.removeItem(RECORD_KEY); renderSaved(); }
+    function renderSaved(){ const rec = readRecord(); savedPre.textContent = rec ? JSON.stringify(rec, null, 2) : '(none)'; }
+    function switchView(name){ for (const el of document.querySelectorAll('.view')) el.classList.remove('active'); document.getElementById(name).classList.add('active'); }
+
+    async function detectIP(){
+      try {
+        const c = await fetch(CHECK_IP_API, {cache:'no-store'});
+        if (!c.ok) throw new Error('non-200');
+        const { ip } = await c.json();
+        return ip || null;
+      } catch { return null; }
+    }
+
+    async function ensureIPStored(){
+      let ip = getIP();
+      if (!ip) {
+        labelIP.textContent = 'detecting…';
+        ip = await detectIP();
+        if (ip) { setIP(ip); labelIP.textContent = ip; }
+        else { labelIP.textContent = '(unavailable)'; }
+      } else {
+        labelIP.textContent = ip;
+      }
+    }
+
+    async function init(){
+      const phone = getPhone();
+      if (!phone) {
+        switchView('setupView');
+        const ip = await detectIP(); if (ip) setIP(ip);
+      } else {
+        labelPhone.textContent = phone;
+        await ensureIPStored();
+        switchView('mainView');
+        renderSaved();
+      }
+    }
+
+    setupSave.addEventListener('click', async () => {
+      setupMsg.className = 'muted';
+      setupMsg.textContent = 'Validating…';
+      const phone = normalizePhone(setupPhone.value);
+      if (!phone || phone.length < 7) {
+        setupMsg.className = 'err';
+        setupMsg.textContent = 'Please enter a valid phone number.';
+        return;
+      }
+      setPhone(phone);
+      labelPhone.textContent = phone;
+      await ensureIPStored();
+      setupMsg.textContent = '';
+      switchView('mainView');
+      renderSaved();
+    });
+
+    resetOnboarding.addEventListener('click', () => {
+      if (!confirm('This will forget your stored phone and IP on this device. Continue?')) return;
+      localStorage.removeItem(PHONE_KEY);
+      localStorage.removeItem(IP_KEY);
+      localStorage.removeItem(RECORD_KEY);
+      location.reload();
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      output.className = 'muted';
+      output.textContent = 'Requesting location…';
+
+      if (!('geolocation' in navigator)) {
+        output.className = 'err';
+        output.textContent = 'Geolocation is not supported by this browser.';
+        return;
+      }
+
+      const phone = getPhone();
+      if (!phone) {
+        output.className = 'err';
+        output.textContent = 'No phone on file. Please complete setup.';
+        switchView('setupView');
+        return;
+      }
+
+      let ip = getIP();
+      if (!ip) { ip = await detectIP(); if (ip) setIP(ip); }
+
+      const options = { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 };
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        const record = {
+          phone,
+          ip: ip || '(unavailable)',
+          latitude: Number(latitude.toFixed(6)),
+          longitude: Number(longitude.toFixed(6)),
+          accuracy: Number.isFinite(accuracy) ? Math.round(accuracy) : null,
+          timestamp: new Date().toISOString(),
+        };
+
+        // Save locally
+        writeRecord(record);
+
+        // Send to backend
+        try {
+          const res = await fetch(SUBMIT_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(record)
+          });
+          if (!res.ok) throw new Error(`Server ${res.status}`);
+          output.className = 'ok';
+          output.innerHTML = `Saved locally and sent to service.<br>📍 ${record.latitude}, ${record.longitude} (±${record.accuracy}m)`;
+        } catch (e) {
+          output.className = 'err';
+          output.textContent = `Saved locally, but failed to send to service: ${e.message}`;
+        }
+      }, (err) => {
+        output.className = 'err';
+        if (err.code === err.PERMISSION_DENIED) output.textContent = 'Permission denied. Please allow location access.';
+        else if (err.code === err.POSITION_UNAVAILABLE) output.textContent = 'Location unavailable.';
+        else if (err.code === err.TIMEOUT) output.textContent = 'Timed out getting location.';
+        else output.textContent = 'Unknown error getting location.';
+      }, options);
+    });
+
+    deleteBtn.addEventListener('click', () => {
+      const rec = readRecord();
+      if (rec) { clearRecord(); output.className = 'ok'; output.textContent = 'Deleted your saved location entry (local only).'; }
+      else { output.className = 'err'; output.textContent = 'No saved entry to delete.'; }
+    });
+
+    refreshBtn.addEventListener('click', renderSaved);
+
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin • Submissions</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    h1 { margin: 0 0 12px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom: 16px; }
+    button { padding: 8px 12px; border: 0; border-radius: 8px; cursor: pointer; }
+    .primary { background: #1a73e8; color: white; }
+    .danger { background: #c62828; color: white; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+    tr:hover { background: #fafafa; }
+    .muted { color: #666; font-size: 13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #accessMessage { margin-bottom:16px; font-weight:600; }
+  </style>
+</head>
+<body>
+  <h1>Admin • Submissions</h1>
+  <div id="accessMessage"></div>
+
+  <div class="row">
+    <button id="refresh" class="primary">Refresh</button>
+    <button id="export"  class="primary">Export CSV</button>
+    <button id="deleteAll" class="danger">Delete All</button>
+    <span id="msg" class="muted"></span>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Phone</th><th>IP</th><th>Latitude</th><th>Longitude</th><th>Acc (m)</th><th>Timestamp</th><th>Server Received</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    /* ---------------------- CONFIG: point to your backend ---------------------- */
+    const API_BASE = "https://YOUR-BACKEND.example.com"; // <-- change me
+    const CHECK_ACCESS_URL = API_BASE + "/api/admin/check-access";
+    const LIST_URL  = API_BASE + "/api/admin/submissions";
+    const DELALL_URL= API_BASE + "/api/admin/submissions";
+
+    const accessMessage = document.getElementById("accessMessage");
+    const TBL = document.querySelector("#tbl tbody");
+    const msg = document.getElementById("msg");
+    const refreshBtn = document.getElementById("refresh");
+    const exportBtn = document.getElementById("export");
+    const deleteAllBtn = document.getElementById("deleteAll");
+
+    function setMsg(t, isErr=false){
+      msg.textContent = t || "";
+      msg.style.color = isErr ? "#c62828" : "#666";
+    }
+
+    async function verifyAccess() {
+      try {
+        const res = await fetch(CHECK_ACCESS_URL, { credentials: "omit" });
+        const data = await res.json();
+        if (!data.allowed) {
+          accessMessage.style.color = "#b00020";
+          accessMessage.textContent = `You do not have admin access (your IP: ${data.ip}).`;
+          document.querySelector("table").style.display = "none";
+          refreshBtn.disabled = true;
+          exportBtn.disabled = true;
+          deleteAllBtn.disabled = true;
+          return false;
+        } else {
+          accessMessage.textContent = "";
+          document.querySelector("table").style.display = "";
+          refreshBtn.disabled = false;
+          exportBtn.disabled = false;
+          deleteAllBtn.disabled = false;
+          return true;
+        }
+      } catch (e) {
+        accessMessage.style.color = "#b00020";
+        accessMessage.textContent = "Error verifying access: " + e.message;
+        document.querySelector("table").style.display = "none";
+        refreshBtn.disabled = true;
+        exportBtn.disabled = true;
+        deleteAllBtn.disabled = true;
+        return false;
+      }
+    }
+
+    async function load() {
+      if (!(await verifyAccess())) return;
+      setMsg("Loading…");
+      TBL.innerHTML = "";
+      try {
+        const res = await fetch(LIST_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+        if (!rows.length) {
+          TBL.innerHTML = `<tr><td colspan="8" class="muted">No submissions yet.</td></tr>`;
+        } else {
+          for (const r of rows) {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+              <td class="mono">${r.phone ?? ""}</td>
+              <td class="mono">${r.ip ?? ""}</td>
+              <td>${r.latitude ?? ""}</td>
+              <td>${r.longitude ?? ""}</td>
+              <td>${r.accuracy ?? ""}</td>
+              <td class="mono">${r.timestamp ?? ""}</td>
+              <td class="mono">${r.serverReceivedAt ?? ""}</td>
+              <td><button data-phone="${r.phone}" class="danger">Delete</button></td>
+            `;
+            tr.querySelector("button").addEventListener("click", () => deleteOne(r.phone));
+            TBL.appendChild(tr);
+          }
+        }
+        setMsg(`Loaded ${rows.length} record(s).`);
+      } catch (e) {
+        setMsg("Failed to load: " + e.message, true);
+      }
+    }
+
+    async function deleteOne(phone){
+      if (!confirm(`Delete record for ${phone}?`)) return;
+      try {
+        const res = await fetch(`${LIST_URL}/${encodeURIComponent(phone)}`, { method: "DELETE" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await load();
+      } catch (e) {
+        setMsg("Delete failed: " + e.message, true);
+      }
+    }
+
+    function toCSV(rows){
+      const cols = ["phone","ip","latitude","longitude","accuracy","timestamp","serverReceivedAt"];
+      const esc = (s) => {
+        if (s == null) return "";
+        const t = String(s);
+        if (t.includes(",") || t.includes("\"") || t.includes("\n")) {
+          return `"${t.replace(/"/g, '""')}"`;
+        }
+        return t;
+      };
+      const lines = [cols.join(",")];
+      for (const r of rows) lines.push(cols.map(c => esc(r[c])).join(","));
+      return lines.join("\n");
+    }
+
+    exportBtn.addEventListener("click", async () => {
+      if (!(await verifyAccess())) return;
+      try {
+        const res = await fetch(LIST_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const rows = await res.json();
+        const csv = toCSV(rows);
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `submissions_${new Date().toISOString().replace(/[:.]/g,"-")}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(url);
+        a.remove();
+      } catch (e) {
+        setMsg("Export failed: " + e.message, true);
+      }
+    });
+
+    deleteAllBtn.addEventListener("click", async () => {
+      if (!(await verifyAccess())) return;
+      if (!confirm("Delete ALL records? This cannot be undone.")) return;
+      try {
+        const res = await fetch(DELALL_URL, { method: "DELETE" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await load();
+      } catch (e) {
+        setMsg("Delete all failed: " + e.message, true);
+      }
+    });
+
+    refreshBtn.addEventListener("click", load);
+    load(); // initial
+  </script>
+</body>
+</html>
