@@ -83,7 +83,10 @@
             <div><strong>Phone:</strong> <span id="labelPhone">—</span></div>
             <div><strong>IP:</strong> <span id="labelIP">(detecting…)</span></div>
           </div>
-          <button id="resetOnboarding" class="ghost" title="Forget phone & IP and start over">Reset setup</button>
+          <div class="row" style="gap:8px;">
+            <button id="resetOnboarding" class="ghost" title="Forget phone & IP and start over">Reset setup</button>
+            <button id="helpButton" class="ghost" title="View instructions">Help</button>
+          </div>          
         </div>
 
         <div class="row">
@@ -150,6 +153,10 @@
     const mapCoordsEl     = document.getElementById("mapCoords");
     const parkingBox      = document.getElementById("parkingBox");
     const sweepingBox     = document.getElementById("sweepingBox");
+    // Help button → redirect to instructions page
+    document.getElementById('helpButton').addEventListener('click', () => {
+    window.location.href = "/help.html"; // or external URL if you prefer
+    });
 
     let map, marker;
     let parkingInterval  = null;
